@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import warnings
 
 import numpy as np
 import pandas as pd
@@ -17,7 +18,7 @@ def log_lineno():
     logging.info(lineno)
 
 
-logging.basicConfig(level="DEBUG")
+logging.basicConfig(level="INFO")
 
 Buchungstag = "Buchungstag"
 Betrag = "Betrag"
@@ -35,17 +36,16 @@ data_map = {
     "Auftraggeber/Begünstigter": "Beguenstigter",
     "Beguenstigter/Zahlungspflichtiger": "Beguenstigter",
     "Betrag(EUR)": "Betrag",
-    # "Kundenreferenz": "PPRef",
-    # "Sammlerreferenz": "PPRef",
 }
 COLUMNS = pd.Index([Buchungstag, Betrag, Beguenstigter, Buchungstext, Verwendungszweck])
-COLUMNS_EXTRA = pd.Index([])
 
 PP_COLUMNS = pd.Index(
     [
+        "Datum",
         Bankref,
         Transcode,
         Ref_Transcode,
+        "Auswirkung auf Guthaben",
     ]
 )
 PP_COLUMNS_USER = pd.Index(
@@ -132,30 +132,116 @@ def read_PayPal(path) -> pd.DataFrame:
         dayfirst=True,
     )
     columns = df.columns.intersection(PP_COLUMNS.union(PP_COLUMNS_USER))
-    df = df.reindex(columns, axis=1)
-    assert Bankref in df.columns
+    assert Bankref in columns
     return df
 
 
-def squeeze_paypal(df):
-    # index_col="Transaktionscode",
-    # todo sum netto brutto -> 0
-    trans_id = df["Transaktionscode"] + df["Rechnungsnummer"]
-    ref_id = df["Zugehöriger Transaktionscode"] + df["Rechnungsnummer"]
-    return df
+def ensure_columns(obj, columns, name):
+    columns = pd.Index(columns)
+    diff = columns.difference(obj.columns)
+    if not diff.empty:
+        raise ValueError(f"'{name}' missing these columns: {diff}")
 
 
-def join_append_paypal(data: pd.DataFrame, paypal: pd.DataFrame) -> pd.DataFrame:
-    # bei Buchungstext==Lastschrift -> Verwendungszweck erste n nummern == Bankreferenz (pp_all)
-    orig = data
+def index_from_DateTime(dates: pd.Series, times: pd.Series, **kwargs) -> pd.Index:
+    """kwargs ar passed to to_datetime."""
+    return pd.to_datetime(dates + "T" + times, **kwargs)
+
+
+def map_PayPal_by_Date(data: pd.DataFrame, paypal: pd.DataFrame) -> pd.DataFrame:
+    ensure_columns(data, [Buchungstag, Beguenstigter, Betrag], "data")
+    ensure_columns(
+        paypal,
+        [
+            "Datum",
+            "Uhrzeit",
+            "Netto",
+            Ref_Transcode,
+            Transcode,
+        ],
+        "paypal",
+    )
     data = data.copy()
+    paypal = paypal.copy()
+
+    # prepare data
+    # data[Verwendungszweck] = data[Verwendungszweck].str.lower()
+    mask = data[Beguenstigter].str.contains("paypal", case=False, na=False)
+    dd = data[mask].copy()
+    dd["dt"] = pd.to_datetime(data.loc[mask, Buchungstag], dayfirst=True)
+
+    # prepare paypal
+    dt = index_from_DateTime(paypal["Datum"], paypal["Uhrzeit"], dayfirst=True)
+    index = pd.Series(data=paypal.index, index=dt)
+
+    # convert to english numeric
+    dd[Betrag] = dd[Betrag].str.replace(",", ".").astype(float)
+    paypal["Netto"] = paypal["Netto"].str.replace(",", ".").astype(float)
+
+    df = pd.DataFrame(index=dd.index)
+    pp_mask = pd.Series(True, index=paypal.index)
+    for row in dd.itertuples():
+        chunk = paypal.loc[index.loc[row.dt - pd.Timedelta("14d") : row.dt]]
+
+        match = chunk["Netto"] == -float(row.Betrag)
+        chunk = chunk[match]
+
+        transcodes = chunk[Transcode].dropna()
+        ref_transcodes = chunk[Ref_Transcode].dropna()
+        count = transcodes.count()
+
+        if count == 1:
+            idx = transcodes.index[0]
+        elif count == 2:
+            if transcodes.iloc[0] == ref_transcodes.iloc[1]:
+                idx = transcodes.index[0]
+            elif ref_transcodes.iloc[0] == transcodes.iloc[1]:
+                idx = transcodes.index[1]
+            else:
+                logging.debug("\n" + chunk.to_string())
+                continue
+        else:
+            logging.debug("\n" + chunk.to_string())
+            continue
+
+        df.loc[row.Index, Ref_Transcode] = paypal.loc[idx, Ref_Transcode]
+        pp_mask[idx] = False
+
+    return merge_pp_to_data(
+        df.reindex(data.index), paypal.loc[pp_mask], Ref_Transcode, Transcode
+    )
+
+
+def merge_pp_to_data(data: pd.DataFrame, paypal: pd.DataFrame, dcol, ppcol):
+    assert dcol in data and ppcol in paypal
+    data = data[[dcol]]
+    columns = PP_COLUMNS.union(PP_COLUMNS_USER).difference(pd.Index([dcol]))
+    # ensure no nans exist
+    to_add = paypal.loc[paypal[ppcol].notna(), columns]
+    if not to_add[ppcol].is_unique:
+        warnings.warn("right side of merge has non-unique values", stacklevel=2)
+    df = pd.merge(data, to_add, left_on=dcol, right_on=ppcol, how="left")
+    # filter only requested columns
+    return df.reindex(pd.Index(PP_COLUMNS_USER), axis=1)
+
+
+def map_PayPal_by_Bankreferenz(
+    data: pd.DataFrame, paypal: pd.DataFrame
+) -> pd.DataFrame:
+    # 1. data.Buchungstext=="Lastschrift" & data.Verwendungszweck=="PayPal..."
+    # 2. extract and store first 13 (or more digits) from data.Beguenstigter as data.Bankreferenz
+    # 3. join data and paypal on data.Bankreferenz==paypal.Bankreferenz
+    # 4. return df with only paypal columns
+    data = data.copy()
+    ensure_columns(data, [Buchungstext, Beguenstigter, Verwendungszweck], "data")
+    ensure_columns(paypal, [Bankref, Ref_Transcode, Transcode], "paypal")
 
     # dd: direct debit
     dd = data[Buchungstext].isin(["Lastschrift", "FOLGELASTSCHRIFT"])
     pp = data[Beguenstigter].str.startswith("PayPal").fillna(False)
     mask = dd & pp
     # find VZ, that starts with a 13 digit (or more) number followed by a space
-    mask &= data[Verwendungszweck].str.match("\d{12}\d+ .*")
+    mask &= data[Verwendungszweck].str.match(r"\d{12}\d+ .*")
     pp_ref = data[Verwendungszweck].str.split(" ", n=1, expand=True)[0]
     pp_ref[~mask] = np.nan
     data[Bankref] = pp_ref
@@ -164,25 +250,35 @@ def join_append_paypal(data: pd.DataFrame, paypal: pd.DataFrame) -> pd.DataFrame
     to_add = paypal.loc[mask, [Bankref, Ref_Transcode]]
     df = pd.merge(data, to_add, on=Bankref, how="left")
 
-    columns = PP_COLUMNS.union(PP_COLUMNS_USER).difference(pd.Index([Ref_Transcode]))
-    to_add = paypal.loc[~mask, columns]
-    df = pd.merge(df, to_add, left_on=Ref_Transcode, right_on=Transcode, how="left")
+    return merge_pp_to_data(df, paypal.loc[~mask], Ref_Transcode, Transcode)
 
-    # filter only requested columns
-    df = df.reindex(orig.columns.union(PP_COLUMNS_USER, sort=False), axis=1)
-    df.rename(lambda c: f"[PayPal] {c}" if c in PP_COLUMNS_USER else c, axis=1, inplace=True)
+
+def map_PayPal(data, paypal):
+    pp = map_PayPal_by_Bankreferenz(data, paypal)
+    pp2 = map_PayPal_by_Date(data, paypal)
+    mask = pp[Transcode].isna()
+    pp[mask] = pp2[mask]
+    pp.columns = "[PayPal] " + pp.columns
+    return pp
+
+
+def prepare_paypal(df):
+    mask = df["Auswirkung auf Guthaben"] == "Memo"
+    df = df[~mask]
     return df
 
 
 if __name__ == "__main__":
     assert pytest.main(["tests.py"]) == os.EX_OK
-    data = read_DKB("Xenia/2022_DKB.csv")
-    data = prepare_data(data)
-    paypal = read_PayPal("Xenia/2022_PayPal_all.CSV")
-    log_lineno()
-    df = join_append_paypal(data, paypal)
-    log_lineno()
-    for c in df.columns:
-        df[c] = df[c].str.slice(stop=50)
-    df.to_csv("out.csv")
+    _df = read_DKB("Xenia/2022_DKB.csv")
+    _data = prepare_data(_df)
+    _paypal = read_PayPal("Xenia/2022_PayPal_all.CSV")
+    _pp = prepare_paypal(_paypal)
+    _pp = map_PayPal(_data, _pp)
+    assert _df.index.equals(_pp.index)
+    _df = _df.join(_pp)
+    for c in _df.columns:
+        if pd.api.types.is_string_dtype(_df[c].dtype):
+            _df[c] = _df[c].str.slice(stop=50)
+    _df.to_csv("out.csv", index=False)
     # print("\n" + df.iloc[4:5, :].to_string())
