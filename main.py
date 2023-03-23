@@ -41,7 +41,7 @@ COLUMNS = pd.Index([Buchungstag, Betrag, Beguenstigter, Buchungstext, Verwendung
 
 PP_COLUMNS = pd.Index(
     [
-        "Datum",
+        "Datum_Uhrzeit",
         Bankref,
         Transcode,
         Ref_Transcode,
@@ -87,9 +87,11 @@ def read_DKB(path) -> pd.DataFrame:
     df = pd.read_csv(
         path,
         sep=";",
+        thousands=".",
+        decimal=",",
         header=header,
         encoding=encoding,
-        parse_dates=True,
+        parse_dates=[0, 1],
         dayfirst=True,
     )
     df.attrs["name"] = "DKB"
@@ -106,9 +108,11 @@ def read_X(path) -> pd.DataFrame:
     df = pd.read_csv(
         path,
         sep=";",
+        thousands=".",  # seems not to work
+        decimal=",",  # seems not to work
         header=header,
         encoding=encoding,
-        parse_dates=True,
+        parse_dates=[1, 2],
         dayfirst=True,
     )
     df.attrs["name"] = "X"
@@ -119,6 +123,8 @@ def prepare_data(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     df.columns = df.columns.str.replace(" ", "")
     df = df.rename(data_map, axis=1).reindex(COLUMNS, axis=1)
+    if pd.api.types.is_string_dtype(df[Betrag]):
+        df[Betrag] = df[Betrag].str.replace(",", ".").astype(float)
     return df
 
 
@@ -126,9 +132,11 @@ def read_PayPal(path) -> pd.DataFrame:
     df = pd.read_csv(
         path,
         sep=",",
-        # index_col="Transaktionscode",
+        thousands=".",
+        decimal=",",  # seems not to work
         encoding="utf8",
-        parse_dates=True,
+        dtype={Transcode: str, Ref_Transcode: str, Bankref: str},
+        parse_dates=[[0, 1]],
         dayfirst=True,
     )
     columns = df.columns.intersection(PP_COLUMNS.union(PP_COLUMNS_USER))
@@ -143,7 +151,7 @@ def ensure_columns(obj, columns, name):
         raise ValueError(f"'{name}' missing these columns: {diff}")
 
 
-def index_from_DateTime(dates: pd.Series, times: pd.Series, **kwargs) -> pd.Index:
+def index_from_PP_DateTime(dates: pd.Series, times: pd.Series, **kwargs) -> pd.Index:
     """kwargs ar passed to to_datetime."""
     return pd.to_datetime(dates + "T" + times, **kwargs)
 
@@ -153,8 +161,7 @@ def map_PayPal_by_Date(data: pd.DataFrame, paypal: pd.DataFrame) -> pd.DataFrame
     ensure_columns(
         paypal,
         [
-            "Datum",
-            "Uhrzeit",
+            "Datum_Uhrzeit",
             "Netto",
             Ref_Transcode,
             Transcode,
@@ -171,12 +178,8 @@ def map_PayPal_by_Date(data: pd.DataFrame, paypal: pd.DataFrame) -> pd.DataFrame
     dd["dt"] = pd.to_datetime(data.loc[mask, Buchungstag], dayfirst=True)
 
     # prepare paypal
-    dt = index_from_DateTime(paypal["Datum"], paypal["Uhrzeit"], dayfirst=True)
-    index = pd.Series(data=paypal.index, index=dt)
 
-    # convert to english numeric
-    dd[Betrag] = dd[Betrag].str.replace(",", ".").astype(float)
-    paypal["Netto"] = paypal["Netto"].str.replace(",", ".").astype(float)
+    index = pd.Series(data=paypal.index, index=pd.Index(paypal["Datum_Uhrzeit"]))
 
     df = pd.DataFrame(index=dd.index)
     pp_mask = pd.Series(True, index=paypal.index)
@@ -280,5 +283,5 @@ if __name__ == "__main__":
     for c in _df.columns:
         if pd.api.types.is_string_dtype(_df[c].dtype):
             _df[c] = _df[c].str.slice(stop=50)
-    _df.to_csv("out.csv", index=False)
+    _df.to_csv("out.csv", index=False, decimal=",", sep=";", date_format="%d.%m.%y")
     # print("\n" + df.iloc[4:5, :].to_string())
