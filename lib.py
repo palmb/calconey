@@ -69,6 +69,7 @@ assert COLUMNS.intersection(PP_COLUMNS).empty
 
 def find_header(file, search: list, how="all", encoding=None):
     """how= 'all' or 'any'"""
+    pd.read_csv
     with open(file, "r", encoding=encoding) as f:
         i = -1
         for line in f:
