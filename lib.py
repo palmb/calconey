@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 from __future__ import annotations
 
+import io
 import os
 import re
 import warnings
@@ -69,25 +70,43 @@ assert COLUMNS.intersection(PP_COLUMNS).empty
 
 def find_header(file, search: list, how="all", encoding=None):
     """how= 'all' or 'any'"""
-    pd.read_csv
-    with open(file, "r", encoding=encoding) as f:
-        i = -1
-        for line in f:
-            if len(line) <= 4:
-                continue
-            i += 1
-            for sub in search:
-                if how == "any" and sub in line:
-                    return i
-                if how == "all" and sub not in line:
-                    break
-                return i
+    if isinstance(file, str):
+        with open(file, "r", encoding=encoding) as f:
+            lines = f.readlines()
+    else:  # buffer
+        file: io.StringIO
+        file.seek(0)
+        lines = file.readlines()
+        file.seek(0)
+
+    i = -1
+    for line in lines:
+        if len(line) <= 4:
+            continue
+        i += 1
+        for sub in search:
+            if how == "any" and sub in line:
+                return i, line
+            if how == "all" and sub not in line:
+                break
+            return i, line
     return None
+
+
+def read_Bank(path) -> pd.DataFrame:
+    encoding = "latin"
+    _, header = find_header(
+        path, ["Valutadatum", "Wertstellung"], how="any", encoding=encoding
+    )
+    if header == "Valutadatum":
+        return read_X(path)
+    else:
+        return read_DKB(path)
 
 
 def read_DKB(path) -> pd.DataFrame:
     encoding = "latin"
-    header = find_header(
+    lno, _ = find_header(
         path, ["Buchungstag", "Verwendungszweck"], how="all", encoding=encoding
     )
     df = pd.read_csv(
@@ -95,7 +114,7 @@ def read_DKB(path) -> pd.DataFrame:
         sep=";",
         thousands=".",
         decimal=",",
-        header=header,
+        header=lno,
         encoding=encoding,
         parse_dates=[0, 1],
         dayfirst=True,
@@ -108,7 +127,7 @@ def read_X(path) -> pd.DataFrame:
     # https://www.paypal.com/reports/dlog
     #   -> Berichtsfelder anpassen -> alle
     encoding = "latin"
-    header = find_header(
+    lno, _ = find_header(
         path, ["Buchungstag", "Verwendungszweck"], how="all", encoding=encoding
     )
     df = pd.read_csv(
@@ -116,7 +135,7 @@ def read_X(path) -> pd.DataFrame:
         sep=";",
         thousands=".",  # seems not to work
         decimal=",",  # seems not to work
-        header=header,
+        header=lno,
         encoding=encoding,
         parse_dates=[1, 2],
         dayfirst=True,
