@@ -1,14 +1,8 @@
 #!/usr/bin/env python
 from __future__ import annotations
 
-import os
-
-import numpy as np
-import pandas as pd
-import logging
-import csv
 import pytest
-from main import read_X, read_DKB, read_PayPal, prepare_data, COLUMNS
+from lib import read_X, read_DKB, read_PayPal, prepare_data, COLUMNS
 
 
 def test_read():
