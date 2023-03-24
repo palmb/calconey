@@ -18,7 +18,19 @@ form = dbc.Form(
                             id="upload-data",
                         ),
                     ],
-                    width="auto",
+                    width=2,
+                ),
+                dbc.Col(
+                    [
+                        dbc.FormText(
+                            dcc.Markdown(
+                                "Download CSV from your Bank and upload here.",
+                                link_target="_blank",  # open in new tab/window
+                            ),
+                            color="secondary",
+                        ),
+                    ],
+                    width=8,
                 ),
             ],
             row=True,
@@ -34,7 +46,25 @@ form = dbc.Form(
                             id="upload-paypal",
                         ),
                     ],
-                    width="auto",
+                    width=2,
+                ),
+                dbc.Col(
+                    [
+                        dbc.FormText(
+                            dcc.Markdown(
+                                "Login in Paypal. Then "
+                                "1 click [https://www.paypal.com/reports/dlog](https://www.paypal.com/reports/dlog). "
+                                "2 click Berichtsfelder anpassen -> select \[Transaktionsdetails, Warenkorbdetails, Payflow-Details\] -> (speichern). "
+                                "3 select Datumsbereich, click Bericht erstellen. "
+                                "4 repeatedly Aktualisieren until ready. "
+                                "5 download CSV from list. "
+                                "6.upload here ",
+                                link_target="_blank",  # open in new tab/window
+                            ),
+                            color="secondary",
+                        ),
+                    ],
+                    width=8,
                 ),
             ],
             row=True,
